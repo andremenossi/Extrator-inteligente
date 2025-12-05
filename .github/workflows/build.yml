@@ -1,0 +1,38 @@
+
+name: Build AutoMed EXE
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out Git repository
+      uses: actions/checkout@v4
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+
+    - name: Install Dependencies
+      run: npm install
+
+    # Se o projeto usar TypeScript/Vite, descomente a linha abaixo para gerar o bundle
+    # - name: Build React App
+    #   run: npm run build
+
+    - name: Build Electron App (EXE)
+      run: npm run dist
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: AutoMed-Installer
+        path: dist/*.exe
