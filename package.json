@@ -1,0 +1,35 @@
+{
+  "name": "extrator-avaliacoes-go",
+  "version": "3.0.0",
+  "description": "Widget de Automação AutoMed G.O",
+  "main": "main.js",
+  "author": "AutoMed Systems",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.automed.widget",
+    "productName": "AutoMed G.O",
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": true
+    },
+    "files": [
+      "main.js",
+      "index.html",
+      "package.json"
+    ]
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.0"
+  }
+}
