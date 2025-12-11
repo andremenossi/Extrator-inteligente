@@ -22,12 +22,14 @@ function createControlWindow() {
     resizable: false,
     webPreferences: { 
       nodeIntegration: true, 
-      contextIsolation: false 
+      contextIsolation: false, // Necessário para usar 'require' no index.html inline
+      webSecurity: false
     },
     icon: path.join(__dirname, 'icon.ico')
   });
 
   controlWindow.loadFile('index.html');
+  // Se estiver em dev: controlWindow.webContents.openDevTools({ mode: 'detach' });
   controlWindow.on('closed', () => app.quit());
 }
 
@@ -42,11 +44,10 @@ function createTargetWindow(url) {
     width: 1280, 
     height: 800,
     webPreferences: { 
-        nodeIntegration: false, // Segurança básica
+        nodeIntegration: false,
         contextIsolation: true,
         webSecurity: false, // CRITICO: Permite acessar frames de origens diferentes (comum em intranets)
         sandbox: false,
-        preload: path.join(__dirname, 'preload_target.js') // Vamos criar este arquivo virtualmente via executeJs
     }
   });
   
