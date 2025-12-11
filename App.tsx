@@ -1,163 +1,157 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Play, Square, Settings, MousePointer, 
-  X, ExternalLink, Activity, FileText, Check, AlertCircle 
-} from 'lucide-react';
+import { Play, Square, MousePointer, X, ExternalLink, Activity, Check, Database } from 'lucide-react';
 
 const electron = window['require'] ? window['require']('electron').ipcRenderer : null;
 
+// Tipos para armazenar os passos gravados
+interface RecordedStep {
+  selector: string;
+  framePath: number[];
+  tagName: string;
+  desc?: string;
+  completed: boolean;
+}
+
 const App: React.FC = () => {
-  const [status, setStatus] = useState('Pronto');
+  const [status, setStatus] = useState('Pronto para Gravar');
   const [progress, setProgress] = useState(0);
-  const [maxRows, setMaxRows] = useState(50);
+  const [maxRows, setMaxRows] = useState(10);
   const [isRunning, setIsRunning] = useState(false);
 
-  const [config, setConfig] = useState({
-    table: false,
-    button: false,
-    details: false
-  });
+  // Armazena a configuração "Selenium"
+  const [steps, setSteps] = useState<{
+    BUTTON: RecordedStep | null;
+    DETAILS: RecordedStep | null;
+  }>({ BUTTON: null, DETAILS: null });
 
   useEffect(() => {
     if (electron) {
+      electron.send('setup-ipc-listener');
+
       electron.on('status', (e, msg) => setStatus(msg));
       electron.on('progress', (e, p) => setProgress(Math.round((p.current / p.total) * 100)));
-      electron.on('config-update', (e, data) => {
-        if(data.mode === 'TABLE') setConfig(p => ({...p, table: true}));
-        if(data.mode === 'BUTTON') setConfig(p => ({...p, button: true}));
-        if(data.mode === 'DETAILS') setConfig(p => ({...p, details: true}));
+      
+      electron.on('element-captured', (e, data) => {
+        const { mode, selector, framePath, tagName, innerText } = data;
+        
+        setSteps(prev => ({
+            ...prev,
+            [mode]: {
+                selector, framePath, tagName, completed: true,
+                desc: `${tagName} (${innerText.substring(0, 15)}...)`
+            }
+        }));
+        setStatus(`Elemento ${mode} Capturado!`);
       });
     }
   }, []);
 
-  const closeApp = () => electron?.send('app-close');
-  const openSystem = () => electron?.send('open-browser');
-  
-  const start = () => {
-    if (!config.button) return setStatus("Configure o Botão primeiro!");
-    setIsRunning(true);
-    electron?.send('start-extraction', { maxRows });
+  const triggerSelect = (mode: 'BUTTON' | 'DETAILS') => {
+    setStatus(`Selecione o ${mode} no navegador...`);
+    electron?.send('trigger-select', mode);
   };
 
-  const stop = () => {
+  const startRun = () => {
+    if (!steps.BUTTON) return setStatus("Precisa definir onde clicar (Botão)!");
+    setIsRunning(true);
+    electron?.send('start-selenium-run', { steps, maxRows });
+  };
+
+  const stopRun = () => {
     setIsRunning(false);
-    setStatus("Parando...");
     electron?.send('stop-extraction');
   };
 
-  const ConfigBtn = ({ label, active, onClick }) => (
-    <button 
-      onClick={onClick}
-      className={`group flex items-center justify-between w-full p-3 rounded-lg border transition-all
-        ${active 
-          ? 'bg-green-500/10 border-green-500/50 text-green-400' 
-          : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700 hover:border-slate-500'}
-      `}
-    >
-      <div className="flex items-center gap-3">
-        {active ? <Check size={16} /> : <MousePointer size={16} />}
-        <span className="text-sm font-medium">{label}</span>
-      </div>
-      <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">DEFINIR</span>
-    </button>
+  const StepCard = ({ mode, label, step }: { mode: 'BUTTON' | 'DETAILS', label: string, step: RecordedStep | null }) => (
+    <div className={`p-3 rounded border mb-2 transition-all ${step ? 'bg-green-900/20 border-green-600' : 'bg-slate-800 border-slate-700'}`}>
+        <div className="flex justify-between items-center mb-1">
+            <span className="text-xs font-bold text-slate-400 uppercase">{label}</span>
+            {step ? <Check size={14} className="text-green-500"/> : <span className="w-3 h-3 rounded-full bg-slate-600"></span>}
+        </div>
+        
+        {step ? (
+            <div className="text-xs text-green-300 font-mono truncate">
+                FRAME: [{step.framePath.join(',')}]<br/>
+                SEL: {step.selector}
+            </div>
+        ) : (
+            <div className="text-xs text-slate-500 italic">Pendente...</div>
+        )}
+
+        <button 
+            onClick={() => triggerSelect(mode)}
+            className="mt-2 w-full text-xs bg-slate-700 hover:bg-slate-600 py-1 rounded text-white flex justify-center items-center gap-2"
+        >
+            <MousePointer size={10} /> {step ? 'Redefinir' : 'Selecionar Elemento'}
+        </button>
+    </div>
   );
 
   return (
-    // Container Principal Transparente
-    <div className="h-screen w-screen flex flex-col bg-slate-900/95 backdrop-blur-md text-white border border-slate-700/50 overflow-hidden shadow-2xl rounded-xl">
+    <div className="h-screen w-screen flex flex-col bg-slate-900/95 text-white border border-slate-700 overflow-hidden select-none">
       
-      {/* Barra de Título Customizada (Drag Region) */}
-      <div className="h-10 bg-slate-950/50 flex items-center justify-between px-3 select-none" style={{WebkitAppRegion: 'drag'}}>
+      {/* Header */}
+      <div className="h-8 bg-slate-950 flex items-center justify-between px-3 drag-region" style={{WebkitAppRegion: 'drag'}}>
         <div className="flex items-center gap-2">
-          <Activity size={16} className="text-blue-500"/>
-          <span className="text-xs font-bold tracking-wider text-slate-300">AUTOMED WIDGET</span>
+          <Database size={14} className="text-amber-500"/>
+          <span className="text-[10px] font-bold tracking-widest text-slate-300">SELENIUM EXTRACTOR</span>
         </div>
-        <button 
-          onClick={closeApp} 
-          className="p-1 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors"
-          style={{WebkitAppRegion: 'no-drag'}}
-        >
-          <X size={16} />
+        <button onClick={() => electron?.send('app-close')} className="text-slate-500 hover:text-white" style={{WebkitAppRegion: 'no-drag'}}>
+            <X size={14} />
         </button>
       </div>
 
-      {/* Corpo do Widget */}
-      <div className="flex-1 p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+      <div className="flex-1 p-4 overflow-y-auto custom-scrollbar flex flex-col gap-3">
         
-        {/* Status Display */}
-        <div className="bg-slate-950 rounded-lg p-3 border border-slate-800 relative overflow-hidden">
-          <div className="relative z-10 flex justify-between items-center">
-             <div>
-               <p className="text-[10px] text-slate-500 uppercase tracking-widest">Status</p>
-               <p className="text-sm font-mono text-blue-400 truncate w-48">{status}</p>
-             </div>
-             <div className="text-right">
-                <span className="text-xl font-bold">{progress}%</span>
-             </div>
-          </div>
-          {/* Progress Bar Background */}
-          <div className="absolute bottom-0 left-0 h-1 bg-blue-500 transition-all duration-300" style={{width: `${progress}%`}}></div>
+        {/* Status Bar */}
+        <div className="bg-black/40 rounded p-2 border border-slate-800">
+            <div className="flex justify-between items-end">
+                <span className="text-[10px] text-slate-500 font-bold">STATUS DO ROBÔ</span>
+                <span className="text-lg font-bold text-blue-400">{progress}%</span>
+            </div>
+            <p className="text-xs text-amber-400 font-mono truncate mt-1">{status}</p>
+            <div className="w-full bg-slate-800 h-1 mt-2 rounded overflow-hidden">
+                <div className="h-full bg-blue-500 transition-all" style={{width: `${progress}%`}}></div>
+            </div>
         </div>
 
-        {/* Link Sistema */}
+        {/* Browser Link */}
         <button 
-          onClick={openSystem}
-          className="flex items-center justify-center gap-2 text-xs text-slate-400 hover:text-white py-2 border border-dashed border-slate-700 rounded hover:bg-slate-800 transition-colors"
+            onClick={() => electron?.send('open-browser')}
+            className="text-xs flex items-center justify-center gap-2 p-2 rounded bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border border-blue-500/30 transition-all"
         >
-          <ExternalLink size={12} /> Abrir/Focar Sistema Hospitalar
+            <ExternalLink size={12} /> Abrir Navegador Alvo
         </button>
 
-        {/* Configuração (Steps) */}
-        <div className="space-y-2">
-          <p className="text-[10px] text-slate-500 uppercase font-bold pl-1">Configuração Visual</p>
-          <ConfigBtn 
-            label="1. Tabela" 
-            active={config.table} 
-            onClick={() => electron?.send('trigger-select', 'TABLE')} 
-          />
-          <ConfigBtn 
-            label="2. Botão Ação" 
-            active={config.button} 
-            onClick={() => electron?.send('trigger-select', 'BUTTON')} 
-          />
-          <ConfigBtn 
-            label="3. Área Detalhes" 
-            active={config.details} 
-            onClick={() => electron?.send('trigger-select', 'DETAILS')} 
-          />
+        <div className="border-t border-slate-800 my-1"></div>
+
+        {/* Steps */}
+        <div>
+            <StepCard mode="BUTTON" label="1. Botão (Ação)" step={steps.BUTTON} />
+            <StepCard mode="DETAILS" label="2. Dados (Extração)" step={steps.DETAILS} />
         </div>
 
-        {/* Controles de Execução */}
-        <div className="mt-auto pt-4 border-t border-slate-800">
-          <div className="flex items-center justify-between mb-3 px-1">
-             <div className="flex items-center gap-2 text-xs text-slate-400" title="Para automaticamente após X pacientes">
-               <Settings size={12} />
-               <span>Limite Linhas:</span>
-             </div>
-             <input 
-               type="number" 
-               value={maxRows}
-               onChange={e => setMaxRows(Number(e.target.value))}
-               className="w-16 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-center focus:border-blue-500 outline-none"
-             />
-          </div>
-
-          {!isRunning ? (
-            <button 
-              onClick={start}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2 transition-all active:scale-95"
-            >
-              <Play size={18} fill="currentColor" /> INICIAR
-            </button>
-          ) : (
-            <button 
-              onClick={stop}
-              className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-lg shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 transition-all active:scale-95 animate-pulse"
-            >
-              <Square size={18} fill="currentColor" /> PARAR
-            </button>
-          )}
+        {/* Controls */}
+        <div className="mt-auto">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-slate-400">Repetir (Linhas):</span>
+                <input 
+                    type="number" value={maxRows} onChange={e => setMaxRows(Number(e.target.value))}
+                    className="w-16 bg-slate-950 border border-slate-700 text-center text-xs p-1 rounded focus:border-amber-500 outline-none"
+                />
+            </div>
+            
+            {!isRunning ? (
+                <button onClick={startRun} className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded shadow-lg flex justify-center items-center gap-2 active:scale-95 transition-transform">
+                    <Play size={16} fill="currentColor"/> EXECUTAR ROBÔ
+                </button>
+            ) : (
+                <button onClick={stopRun} className="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded shadow-lg flex justify-center items-center gap-2 animate-pulse">
+                    <Square size={16} fill="currentColor"/> PARAR AGORA
+                </button>
+            )}
         </div>
+
       </div>
     </div>
   );

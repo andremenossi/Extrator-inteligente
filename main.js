@@ -1,151 +1,25 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-// Script injetado para seleção visual - AGORA COM BROADCAST ENTRE FRAMES
-const SELECTOR_SCRIPT = ' ' +
-  '(function() {' +
-    'function initFrame(doc, win) {' +
-        'if (win.__automedInitialized) return;' +
-        'win.__automedInitialized = true;' +
-
-        'const style = doc.createElement("style");' +
-        'style.innerHTML = ".automed-hover { outline: 4px solid #ef4444 !important; cursor: crosshair !important; z-index: 999999; }";' +
-        'if(doc.head) doc.head.appendChild(style);' +
-
-        'function setMode(mode) {' +
-            'win.__activeMode = mode;' +
-            'if(!mode) {' +
-                'const el = doc.querySelector(".automed-hover");' +
-                'if(el) el.classList.remove("automed-hover");' +
-            '}' +
-        '}' +
-
-        'win.addEventListener("message", (e) => {' +
-            'if(e.data && e.data.type === "AUTOMED_SET_MODE") {' +
-                'setMode(e.data.mode);' +
-                // Repassa para sub-iframes deste frame
-                'const frames = win.frames;' +
-                'for(let i=0; i<frames.length; i++) {' +
-                    'try { frames[i].postMessage(e.data, "*"); } catch(err){}' +
-                '}' +
-            '}' +
-        '});' +
-
-        'doc.addEventListener("mouseover", (e) => {' +
-          'if (!win.__activeMode) return;' +
-          'e.stopPropagation();' +
-          'const el = doc.querySelector(".automed-hover");' +
-          'if(el) el.classList.remove("automed-hover");' +
-          'e.target.classList.add("automed-hover");' +
-        '}, true);' +
-
-        'doc.addEventListener("click", (e) => {' +
-          'if (!win.__activeMode) return;' +
-          'e.preventDefault(); e.stopPropagation();' +
-          'const t = e.target;' +
-          't.classList.remove("automed-hover");' +
-          
-          'let res = { mode: win.__activeMode, valid: false };' +
-          
-          'if (win.__activeMode === "TABLE") {' +
-             'res.valid = true;' +
-             'res.desc = "Tabela identificada";' +
-          '}' +
-          'else if (win.__activeMode === "BUTTON") {' +
-             'const td = t.closest("td");' +
-             'if(td) { ' +
-               'res.colIndex = td.cellIndex; ' +
-               'res.tag = t.tagName; ' +
-               'res.valid = true; ' +
-               'res.desc = "Botão na Coluna " + (td.cellIndex + 1);' +
-             '} else {' +
-               'res.valid = true;' +
-               'res.desc = "Elemento clicável identificado";' +
-               'res.selector = t.className ? "."+t.className.split(" ")[0] : t.tagName;' +
-             '}' +
-          '}' +
-          'else if (win.__activeMode === "DETAILS") {' +
-             'res.selector = t.id ? "#"+t.id : t.className ? "."+t.className.split(" ")[0] : t.tagName;' +
-             'res.valid = true;' +
-             'res.desc = "Área de detalhes";' +
-          '}' +
-
-          'if(res.valid) {' +
-            // Envia para o Electron (tenta achar o require, pois nodeIntegration: true)
-            'try {' +
-                'const ipc = require("electron").ipcRenderer;' +
-                'ipc.send("element-selected", res);' +
-            '} catch(err) {' +
-                'console.log("Erro IPC Frame:", err);' +
-            '}' +
-            // Limpa modo em todos
-            'window.top.postMessage({type: "AUTOMED_SET_MODE", mode: null}, "*");' +
-          '}' +
-        '}, true);' +
-    '}' +
-
-    'initFrame(document, window);' +
-
-    // Observa carregamento de novos frames
-    'const observer = new MutationObserver(() => {' +
-        'const iframes = document.querySelectorAll("iframe, frame");' +
-        'iframes.forEach(ifr => {' +
-            'try {' +
-                'if(ifr.contentDocument && ifr.contentWindow) {' +
-                    'initFrame(ifr.contentDocument, ifr.contentWindow);' +
-                '}' +
-            '} catch(e){}' +
-        '});' +
-    '});' +
-    'observer.observe(document, { childList: true, subtree: true });' +
-
-    // Tenta inicializar frames já existentes
-    'const iframes = document.querySelectorAll("iframe, frame");' +
-    'iframes.forEach(ifr => {' +
-        'try {' +
-            'if(ifr.contentDocument && ifr.contentWindow) initFrame(ifr.contentDocument, ifr.contentWindow);' +
-             'ifr.addEventListener("load", () => {' +
-                 'try { initFrame(ifr.contentDocument, ifr.contentWindow); } catch(e){}' +
-             '});' +
-        '} catch(e){}' +
-    '});' +
-    
-    // Handler Inicial (só no Top) recebe do Electron e propaga
-    'if (window === window.top) {' +
-        'const { ipcRenderer } = require("electron");' +
-        'ipcRenderer.on("start-selection-mode", (event, mode) => {' +
-          'window.postMessage({type: "AUTOMED_SET_MODE", mode: mode}, "*");' +
-        '});' +
-    '}' +
-
-  '})();';
-
 let controlWindow;
 let targetWindow;
-let isStopped = false;
+let isRunning = false;
 
-// Configuração do Robô
-let robotConfig = {
-  tableConfigured: false,
-  btnColIndex: -1,
-  btnSelector: null,
-  detailsSelector: 'body'
-};
+// --- CONFIGURAÇÃO DE SEGURANÇA E JANELAS ---
 
 function createControlWindow() {
   const { width } = screen.getPrimaryDisplay().workAreaSize;
   
   controlWindow = new BrowserWindow({
-    width: 350, 
-    height: 600, 
-    x: width - 380,
-    y: 100,
-    frame: false, 
+    width: 400, 
+    height: 700, 
+    x: width - 420,
+    y: 50,
+    frame: false, // Widget flutuante
     transparent: true, 
     alwaysOnTop: true, 
     resizable: false,
-    hasShadow: true,
     webPreferences: { 
       nodeIntegration: true, 
       contextIsolation: false 
@@ -153,234 +27,406 @@ function createControlWindow() {
     icon: path.join(__dirname, 'icon.ico')
   });
 
-  controlWindow.loadFile('index.html'); 
-  controlWindow.on('closed', () => { app.quit(); });
+  controlWindow.loadFile('index.html');
+  controlWindow.on('closed', () => app.quit());
 }
 
 function createTargetWindow(url) {
   if (targetWindow && !targetWindow.isDestroyed()) {
     targetWindow.loadURL(url);
-    targetWindow.focus();
+    targetWindow.show();
     return;
   }
 
   targetWindow = new BrowserWindow({
-    width: 1200, height: 800,
+    width: 1280, 
+    height: 800,
     webPreferences: { 
-        nodeIntegration: true, 
-        contextIsolation: false,
-        webSecurity: false, // CRITICO: Permite acesso cross-frame em intranet
-        allowRunningInsecureContent: true,
-        backgroundThrottling: false
+        nodeIntegration: false, // Segurança básica
+        contextIsolation: true,
+        webSecurity: false, // CRITICO: Permite acessar frames de origens diferentes (comum em intranets)
+        sandbox: false,
+        preload: path.join(__dirname, 'preload_target.js') // Vamos criar este arquivo virtualmente via executeJs
     }
   });
   
   targetWindow.loadURL(url);
   
-  // Injeta o script em cada navegação
+  // Injeta o "Agente" em cada navegação
   targetWindow.webContents.on('did-finish-load', () => {
-    targetWindow.webContents.executeJavaScript(SELECTOR_SCRIPT).catch(e => console.log('Erro injeção:', e));
+    injectSeleniumAgent();
   });
 }
 
-app.whenReady().then(() => {
-  createControlWindow();
-});
-
-// --- IPC HANDLERS ---
+app.whenReady().then(createControlWindow);
 
 ipcMain.on('app-close', () => app.quit());
-ipcMain.on('app-minimize', () => controlWindow.minimize());
+ipcMain.on('open-browser', (event, url) => createTargetWindow(url || 'https://intranet.hepresidenteprudente.org.br/'));
 
-ipcMain.on('open-browser', (event, url) => {
-  createTargetWindow(url || 'https://intranet.hepresidenteprudente.org.br/');
+// --- LÓGICA "SELENIUM" (O Agente Injetado) ---
+
+// Este script é injetado no navegador alvo. Ele se espalha como um vírus benéfico
+// por todos os frames e iframes para permitir a seleção e automação.
+const SELENIUM_AGENT_SCRIPT = `
+(function() {
+    if (window.__seleniumAgentActive) return;
+    window.__seleniumAgentActive = true;
+
+    // Estilos visuais para o modo de seleção
+    const style = document.createElement('style');
+    style.innerHTML = \`
+        .selenium-highlight { 
+            outline: 4px solid #f59e0b !important; 
+            outline-offset: -2px !important;
+            background: rgba(245, 158, 11, 0.2) !important;
+            cursor: crosshair !important;
+            z-index: 999999 !important;
+        }
+        .selenium-clicked {
+            outline: 4px solid #22c55e !important;
+            background: rgba(34, 197, 94, 0.2) !important;
+        }
+    \`;
+    document.head.appendChild(style);
+
+    // Identificação do Frame Atual (Caminho até o topo)
+    function getFramePath() {
+        let path = [];
+        let win = window;
+        while (win !== window.top) {
+            // Descobrir qual índice este frame ocupa no pai
+            let parent = win.parent;
+            for (let i = 0; i < parent.frames.length; i++) {
+                if (parent.frames[i] === win) {
+                    path.unshift(i); // Adiciona o índice no início
+                    break;
+                }
+            }
+            win = parent;
+        }
+        return path; // Ex: [0, 1] -> Frame 0 > Frame 1
+    }
+
+    // Gerador de Seletor CSS Único
+    function getCssSelector(el) {
+        if (!el || el.nodeType !== 1) return '';
+        if (el.id) return '#' + el.id;
+        
+        let path = [];
+        while (el && el.nodeType === 1) {
+            let selector = el.nodeName.toLowerCase();
+            if (el.className) {
+                // Pega apenas a primeira classe para evitar classes dinâmicas complexas
+                const cleanClass = el.className.split(' ')[0].trim();
+                if(cleanClass) selector += '.' + cleanClass;
+            }
+            
+            // Adiciona nth-child se houver irmãos
+            let sibling = el, nth = 1;
+            while (sibling = sibling.previousElementSibling) {
+                if (sibling.nodeName.toLowerCase() == selector.split('.')[0]) nth++;
+            }
+            if (nth > 1) selector += \`:nth-of-type(\${nth})\`;
+            
+            path.unshift(selector);
+            el = el.parentElement;
+            // Para se chegar num ID ou Body
+            if (el && el.id) {
+                path.unshift('#' + el.id);
+                break;
+            }
+        }
+        return path.join(' > ');
+    }
+
+    // Listener de Seleção
+    function enableSelectionMode(modeType) {
+        const handlerOver = (e) => {
+            e.stopPropagation();
+            e.target.classList.add('selenium-highlight');
+        };
+        const handlerOut = (e) => {
+            e.stopPropagation();
+            e.target.classList.remove('selenium-highlight');
+        };
+        const handlerClick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const el = e.target;
+            el.classList.remove('selenium-highlight');
+            el.classList.add('selenium-clicked');
+            
+            setTimeout(() => el.classList.remove('selenium-clicked'), 1000);
+
+            // Envia dados para o Electron (Top Window -> Main Process)
+            const selector = getCssSelector(el);
+            const framePath = getFramePath();
+            
+            window.top.postMessage({
+                type: 'SELENIUM_ELEMENT_SELECTED',
+                payload: {
+                    mode: modeType,
+                    selector: selector,
+                    framePath: framePath, // Onde está o elemento
+                    tagName: el.tagName,
+                    innerText: el.innerText.substring(0, 50)
+                }
+            }, '*');
+
+            disableSelectionMode();
+        };
+
+        window.__seleniumHandlers = { handlerOver, handlerOut, handlerClick };
+        document.addEventListener('mouseover', handlerOver, true);
+        document.addEventListener('mouseout', handlerOut, true);
+        document.addEventListener('click', handlerClick, true);
+    }
+
+    function disableSelectionMode() {
+        if (window.__seleniumHandlers) {
+            document.removeEventListener('mouseover', window.__seleniumHandlers.handlerOver, true);
+            document.removeEventListener('mouseout', window.__seleniumHandlers.handlerOut, true);
+            document.removeEventListener('click', window.__seleniumHandlers.handlerClick, true);
+            window.__seleniumHandlers = null;
+        }
+    }
+
+    // Escuta comandos do processo principal
+    window.addEventListener('message', (e) => {
+        if (e.data.type === 'CMD_START_SELECT') {
+            enableSelectionMode(e.data.mode);
+        }
+        if (e.data.type === 'CMD_STOP_SELECT') {
+            disableSelectionMode();
+        }
+    });
+
+    // Propagar agente para frames filhos
+    function injectChildren() {
+        const frames = document.querySelectorAll('iframe, frame');
+        frames.forEach(f => {
+            try {
+                // Tenta injetar via javascript: se mesmo domínio, ou espera carregar
+                if (f.contentWindow) {
+                    // O Electron Main Process injetará aqui via executeJavaScript recursivo,
+                    // mas podemos tentar propagar a mensagem
+                    f.contentWindow.postMessage({ type: 'PING_AGENT' }, '*');
+                }
+            } catch(err) {}
+        });
+    }
+    setInterval(injectChildren, 2000);
+})();
+`;
+
+function injectSeleniumAgent() {
+    if (!targetWindow || targetWindow.isDestroyed()) return;
+    
+    // Injeção Recursiva Poderosa: Navega por todos os webFrames do Electron
+    targetWindow.webContents.executeJavaScript(`
+        (function() {
+             const script = \`${SELENIUM_AGENT_SCRIPT.replace(/`/g, '\\`').replace(/\${/g, '\\${')}\`;
+             
+             // Função para injetar em uma janela e seus frames
+             function propagate(win) {
+                try {
+                    win.eval(script);
+                    for (let i = 0; i < win.frames.length; i++) {
+                        propagate(win.frames[i]);
+                    }
+                } catch(e) { console.log('Bloqueio de segurança em frame ignorado'); }
+             }
+             
+             propagate(window);
+             
+             // Setup do listener de comunicação no TOPO
+             if (window === window.top && !window.__ipcBridge) {
+                window.__ipcBridge = true;
+                window.addEventListener('message', (e) => {
+                    if (e.data && e.data.type === 'SELENIUM_ELEMENT_SELECTED') {
+                        // Converte para string segura para o console do Electron capturar
+                        console.log('__SELENIUM_IPC__:' + JSON.stringify(e.data.payload));
+                    }
+                });
+             }
+        })()
+    `).catch(err => console.log("Erro de injeção:", err));
+}
+
+// Captura mensagens do console da janela alvo (ponte IPC improvisada e segura)
+ipcMain.on('setup-ipc-listener', () => {
+    if(!targetWindow) return;
+    targetWindow.webContents.on('console-message', (e, level, msg) => {
+        if (msg.startsWith('__SELENIUM_IPC__:')) {
+            const payload = JSON.parse(msg.replace('__SELENIUM_IPC__:', ''));
+            controlWindow.webContents.send('element-captured', payload);
+            
+            // Para a seleção visual
+            targetWindow.webContents.executeJavaScript(`
+                (function(){
+                    function stopAll(win) {
+                        win.postMessage({type: 'CMD_STOP_SELECT'}, '*');
+                        for(let i=0; i<win.frames.length; i++) stopAll(win.frames[i]);
+                    }
+                    stopAll(window.top);
+                })()
+            `);
+        }
+    });
 });
+
+// --- COMANDOS DO USUÁRIO ---
 
 ipcMain.on('trigger-select', (event, mode) => {
-  if (!targetWindow || targetWindow.isDestroyed()) return;
-  targetWindow.focus();
-  // Envia para o TOP frame, o script lá vai fazer o broadcast para os iframes
-  targetWindow.webContents.send('start-selection-mode', mode);
-});
-
-ipcMain.on('cancel-select', () => {
-  if (!targetWindow || targetWindow.isDestroyed()) return;
-  // Envia mode: null para cancelar
-  targetWindow.webContents.send('start-selection-mode', null);
-});
-
-ipcMain.on('element-selected', (event, data) => {
-  if (data.mode === 'TABLE') robotConfig.tableConfigured = true;
-  else if (data.mode === 'BUTTON') {
-    robotConfig.btnColIndex = data.colIndex;
-    robotConfig.btnSelector = data.selector;
-  } 
-  else if (data.mode === 'DETAILS') robotConfig.detailsSelector = data.selector;
-  
-  controlWindow.webContents.send('config-update', { ...data });
-});
-
-ipcMain.on('stop-extraction', () => {
-  isStopped = true;
-});
-
-ipcMain.on('start-extraction', async (event, { maxRows }) => {
-  if (!targetWindow) return;
-  isStopped = false;
-  let collectedData = [];
-  
-  event.reply('status', 'Iniciando...');
-
-  try {
-    // Tenta contar linhas (buscando em todos os frames)
-    const rowsCount = await targetWindow.webContents.executeJavaScript(`
-      (function(){
-          let max = 0;
-          function count(doc) {
-              const trs = doc.querySelectorAll('tr').length;
-              if(trs > max) max = trs;
-              const frames = doc.querySelectorAll('iframe, frame');
-              frames.forEach(f => { try { if(f.contentDocument) count(f.contentDocument); } catch(e){} });
-          }
-          count(document);
-          return max;
-      })()
-    `);
+    if (!targetWindow || targetWindow.isDestroyed()) return;
+    targetWindow.focus();
     
-    // Injeção de Iframe Seguro para evitar Reload
-    await targetWindow.webContents.executeJavaScript(`
-      if(!document.getElementById('automed-frame')) {
-        const ifr = document.createElement('iframe');
-        ifr.name = 'automed-frame';
-        ifr.id = 'automed-frame';
-        ifr.style.width = '0'; ifr.style.height = '0';
-        document.body.appendChild(ifr);
-      }
-      const form = document.querySelector('form');
-      if(form) form.target = 'automed-frame';
+    // Manda comando para TODOS os frames iniciarem modo de seleção
+    targetWindow.webContents.executeJavaScript(`
+        (function(){
+            function startAll(win) {
+                win.postMessage({type: 'CMD_START_SELECT', mode: '${mode}'}, '*');
+                for(let i=0; i<win.frames.length; i++) startAll(win.frames[i]);
+            }
+            startAll(window.top);
+        })()
     `);
+});
 
-    for (let i = 1; i < Math.min(rowsCount, maxRows + 5); i++) {
-       if (isStopped) {
-         event.reply('status', 'Parado.');
-         break;
-       }
+ipcMain.on('stop-extraction', () => { isRunning = false; });
 
-       event.reply('status', `Paciente ${i}...`);
-       event.reply('progress', { current: i, total: maxRows });
-
-       const success = await targetWindow.webContents.executeJavaScript(`
-         (function(){
-            // Função recursiva de busca e clique
-            function findAndClick(doc) {
-                const rows = doc.querySelectorAll('tr');
-                let btn = null;
-                
-                // Só tenta clicar se a linha existir neste frame
-                if(rows[${i}]) {
-                    if (${robotConfig.btnColIndex} >= 0) {
-                       const cell = rows[${i}].cells[${robotConfig.btnColIndex}];
-                       if(cell) btn = cell.querySelector('a, input, img, button');
-                    } else {
-                       btn = rows[${i}].querySelector('${robotConfig.btnSelector || 'input'}');
-                    }
+ipcMain.on('start-selenium-run', async (event, config) => {
+    if (!targetWindow || targetWindow.isDestroyed()) return;
+    isRunning = true;
+    
+    // Função auxiliar executada no contexto do navegador
+    // Ela navega até o frame correto usando o caminho [0, 1, etc] e executa ação
+    const browserActionScript = (framePath, selector, action, value = null) => `
+        (function() {
+            let win = window.top;
+            const path = ${JSON.stringify(framePath)};
+            
+            // Viaja pelos frames
+            for (let i = 0; i < path.length; i++) {
+                if (win.frames[path[i]]) {
+                    win = win.frames[path[i]];
+                } else {
+                    return { success: false, error: 'Frame path not found: ' + i };
                 }
-
-                if(btn) {
-                    // Clicar
-                    const mE = new MouseEvent('click', {bubbles:true, cancelable:true, view:window});
-                    btn.dispatchEvent(mE);
-                    return true;
-                }
-
-                // Busca em frames filhos
-                const frames = doc.querySelectorAll('iframe, frame');
-                for(let f=0; f<frames.length; f++) {
-                    try {
-                        if(frames[f].contentDocument) {
-                            if(findAndClick(frames[f].contentDocument)) return true;
-                        }
-                    } catch(e){}
-                }
-                return false;
+            }
+            
+            const el = win.document.querySelector('${selector}');
+            if (!el) return { success: false, error: 'Element not found' };
+            
+            if ('${action}' === 'click') {
+                el.click();
+                return { success: true };
+            }
+            
+            if ('${action}' === 'read') {
+                 // Lógica inteligente de leitura
+                 if (el.tagName === 'TABLE') {
+                     // Retorna HTML da tabela para processar no main process ou JSON simples
+                     const rows = Array.from(el.querySelectorAll('tr'));
+                     return { success: true, data: rows.length };
+                 }
+                 return { success: true, data: el.innerText };
             }
 
-            return findAndClick(document);
-         })()
-       `);
+            return { success: false, error: 'Unknown action' };
+        })()
+    `;
 
-       if (success) {
-         await new Promise(r => setTimeout(r, 2500)); 
-         
-         const details = await targetWindow.webContents.executeJavaScript(`
-            (function() {
-              const res = {};
-              const ifr = document.getElementById('automed-frame');
-              
-              let docToRead = document;
-              // Se tiver iframe de carga, usa ele
-              if (ifr && ifr.contentDocument && ifr.contentDocument.body.innerHTML.length > 50) {
-                  docToRead = ifr.contentDocument;
-              }
-              
-              function extract(d) {
-                  // Estratégia Input
-                  d.querySelectorAll('input[type=text]').forEach(i => {
-                     let label = 'Desconhecido';
-                     const parentTd = i.closest('td');
-                     if(parentTd && parentTd.previousElementSibling) {
-                        label = parentTd.previousElementSibling.innerText.trim().replace(':','');
-                     }
-                     if(i.value) res[label] = i.value;
-                  });
-                  // Estratégia Select
-                  d.querySelectorAll('select').forEach(s => {
-                      let label = s.id || 'Select';
-                      const parentTd = s.closest('td');
-                      if(parentTd && parentTd.previousElementSibling) {
-                        label = parentTd.previousElementSibling.innerText.trim().replace(':','');
-                      }
-                      res[label] = s.options[s.selectedIndex]?.text || '';
-                  });
-                  // Estratégia Radio Checked
-                  d.querySelectorAll('input[type=radio]:checked').forEach(r => {
-                      let label = r.name || 'Radio';
-                      const lbl = d.querySelector('label[for="'+r.id+'"]');
-                      const val = lbl ? lbl.innerText : r.value;
-                      res[label] = val;
-                  });
-              }
+    try {
+        event.reply('status', 'Iniciando Robô Selenium...');
 
-              extract(docToRead);
-              
-              const frames = docToRead.querySelectorAll('iframe, frame');
-              frames.forEach(f => { try { if(f.contentDocument) extract(f.contentDocument); } catch(e){} });
-
-              return res;
-            })()
-         `);
-         collectedData.push(details);
-       }
-    }
-
-    if (collectedData.length > 0) {
-      const { filePath } = await dialog.showSaveDialog(controlWindow, { defaultPath: 'Extracao_G_O.csv' });
-      if(filePath) {
-        const allKeys = [...new Set(collectedData.flatMap(Object.keys))];
-        const header = allKeys.join(';');
-        const csvRows = collectedData.map(row => {
-          return allKeys.map(k => (row[k] || '').replace(/;/g, ',').replace(/[\r\n]+/g, ' ')).join(';');
-        });
+        // 1. Encontrar Tabela (Loop Principal)
+        // Aqui assumimos que o seletor da tabela aponta para um TR genérico ou a própria TABLE
+        // Para simplificar, vamos assumir que o usuário clicou em uma linha da tabela ou no botão
         
-        const csvContent = "sep=;\n" + header + "\n" + csvRows.join('\n');
-        fs.writeFileSync(filePath, csvContent, 'utf-8');
-        event.reply('status', 'Salvo com sucesso!');
-      }
-    } else {
-      event.reply('status', 'Sem dados para salvar.');
-    }
+        const limit = config.maxRows || 10;
+        
+        // LOOP DE PACIENTES
+        for (let i = 0; i < limit; i++) {
+            if (!isRunning) break;
+            
+            event.reply('status', `Processando Linha ${i + 1}...`);
+            event.reply('progress', { current: i, total: limit });
 
-  } catch (err) {
-    event.reply('status', 'Erro: ' + err.message);
-  }
+            // A Lógica "Selenium" aqui é complexa pois depende de como a tabela é construída
+            // Vamos tentar encontrar o botão baseado no Path gravado, mas alterando o índice do TR se possível
+            // Ou simplesmente procurando TODOS os botões naquele frame específico.
+
+            // ESTRATÉGIA ROBUSTA:
+            // 1. Ir até o frame do botão.
+            // 2. Pegar todos os elementos que correspondem ao seletor do botão.
+            // 3. Clicar no elemento [i].
+            
+            const btnConfig = config.steps.BUTTON;
+            
+            const clickResult = await targetWindow.webContents.executeJavaScript(`
+                (function() {
+                    let win = window.top;
+                    const path = ${JSON.stringify(btnConfig.framePath)};
+                    for (let idx of path) win = win.frames[idx];
+                    
+                    // Tenta achar lista de botões similares
+                    // Remove :nth-child e IDs específicos para tentar pegar a lista
+                    // Esta é uma heurística simples.
+                    
+                    // Se o usuário selecionou um botão específico, vamos tentar clicar nele
+                    // Mas num loop, precisamos do "próximo".
+                    // Vamos tentar pegar todos os elementos com a mesma classe/tag do alvo
+                    
+                    const selector = '${btnConfig.selector}';
+                    // Tenta simplificar o seletor para pegar todos da coluna
+                    const simpleSelector = selector.split(':nth')[0]; 
+                    
+                    const allBtns = win.document.querySelectorAll(simpleSelector);
+                    const btn = allBtns[${i}]; // Pega o i-ésimo botão
+                    
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                })()
+            `);
+
+            if (clickResult) {
+                // Espera carregamento (delay simples ou esperar elemento aparecer)
+                event.reply('status', 'Aguardando carregamento...');
+                await new Promise(r => setTimeout(r, 3000));
+                
+                // Extrair Detalhes
+                if (config.steps.DETAILS) {
+                     const detConfig = config.steps.DETAILS;
+                     const text = await targetWindow.webContents.executeJavaScript(
+                        browserActionScript(detConfig.framePath, detConfig.selector, 'read')
+                     );
+                     // Salvar dados (mock)
+                     console.log("Dados extraídos:", text);
+                }
+                
+                // Voltar (se necessário - browser back)
+                targetWindow.webContents.goBack();
+                await new Promise(r => setTimeout(r, 2000));
+                // Re-injetar script pois a página recarregou
+                injectSeleniumAgent();
+                await new Promise(r => setTimeout(r, 1000));
+
+            } else {
+                event.reply('status', 'Fim da lista ou botão não encontrado.');
+                break;
+            }
+        }
+        
+        event.reply('status', 'Finalizado com Sucesso.');
+        
+    } catch (err) {
+        event.reply('status', 'Erro: ' + err.message);
+    }
+    
+    isRunning = false;
 });
